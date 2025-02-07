@@ -6,6 +6,18 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
+function deleteKeysFromStorage() {
+  const keysToDelete = ['mId'];
+
+  chrome.storage.local.remove(keysToDelete, function() {
+      if (chrome.runtime.lastError) {
+          console.error("Error deleting keys:", chrome.runtime.lastError);
+      } else {
+          console.log(`Keys deleted: ${keysToDelete.join(', ')}`);
+      }
+  });
+}
+
 async function fetchAINotes() {
   const summaryDiv = document.getElementById("meeting-summary");
   const actionItemsDiv = document.getElementById("action-items");
@@ -40,64 +52,90 @@ async function fetchAINotes() {
       )
       .join("");
 
+    // Get userId first
+    const userIdResponse = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { action: "getUserId" },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            reject(chrome.runtime.lastError);
+          } else {
+            resolve(response);
+          }
+        }
+      );
+    });
+
+    const getMeetingId = async () => {
+        const result = await chrome.storage.local.get('mId');
+        return result.mId; // Extract the meetingId value
+    };
+    
+    const userId = userIdResponse.userId;
+    const meetingId = await getMeetingId();
+
+    console.log(`Meeting ID retrieved: ${meetingId}`);
+    console.log(`User ID retrieved: ${userId}`);
+    
     const body = {
       transcript: formattedTranscript,
+      meeting_id: meetingId,
+      user_id: userId,
     };
 
     // Make API request
-    const response = await fetch(
-      `${AMUREX_CONFIG.BASE_URL_BACKEND}/generate_actions`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify(body),
-      }
-    );
+    fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/end_meeting`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(body),
+    })
+    .then(response => response.json())
+    .then(data => {
+      // Display the Notion link and meeting notes
+      summaryDiv.innerHTML = `
+        <div class="notes-content">${
+          data.notes_content
+            ? data.notes_content
+                .trim()
+                .split("\n")
+                .filter((line) => line.trim() !== "")
+                .map((line) =>
+                  line.startsWith("- ")
+                    ? `<li>${line.substring(2)}</li>` // Handle list items
+                    : line // Keep other lines as is
+                        .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+                        .replace(/\*(.*?)\*/g, "<em>$1</em>")
+                        .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2">$1</a>')
+                )
+                .join("\n") // Restore newlines
+                .replace(
+                  /(<li>.*?<\/li>)\n?(<li>.*?<\/li>)+/g,
+                  (list) => `<ul>${list}</ul>`
+                ) // Wrap consecutive list items
+                .replace(/\n/g, "<br>") // Convert remaining newlines to <br>
+            : "No meeting notes available."
+        }</div>
+      `;
 
-    if (!response.ok) {
-      throw new Error(`Server responded with ${response.status}`);
-    }
+      // Display the action items with markdown formatting
+      actionItemsDiv.innerHTML = `
+        <div class="action-items">${
+          data.action_items || "No action items available."
+        }</div>
+      `;
 
-    const data = await response.json();
-
-    // Display the Notion link and meeting notes
-    summaryDiv.innerHTML = `
-      <div class="notes-content">${
-        data.notes_content
-          ? data.notes_content
-              .trim()
-              .split("\n")
-              .filter((line) => line.trim() !== "")
-              .map((line) =>
-                line.startsWith("- ")
-                  ? `<li>${line.substring(2)}</li>` // Handle list items
-                  : line // Keep other lines as is
-                      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-                      .replace(/\*(.*?)\*/g, "<em>$1</em>")
-                      .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2">$1</a>')
-              )
-              .join("\n") // Restore newlines
-              .replace(
-                /(<li>.*?<\/li>)\n?(<li>.*?<\/li>)+/g,
-                (list) => `<ul>${list}</ul>`
-              ) // Wrap consecutive list items
-              .replace(/\n/g, "<br>") // Convert remaining newlines to <br>
-          : "No meeting notes available."
-      }</div>
-    `;
-
-    // Display the action items with markdown formatting
-    actionItemsDiv.innerHTML = `
-      <div class="action-items">${
-        data.action_items || "No action items available."
-      }</div>
-    `;
-
-    // Add this after the actionItemsDiv.innerHTML line:
-    generateEmailOptions(data);
+      // Add this after the actionItemsDiv.innerHTML line:
+      generateEmailOptions(data);
+      deleteKeysFromStorage();
+    })
+    .catch(error => {
+      console.error("Error fetching or parsing meeting notes:", error);
+      summaryDiv.innerHTML = "<p>Failed to generate meeting notes. Please try again later.</p>";
+      actionItemsDiv.innerHTML = "<p class='error-details'>Error: Failed to process server response</p>";
+    });
   } catch (error) {
     console.error("Error generating notes:", error);
     summaryDiv.innerHTML =
@@ -240,23 +278,24 @@ function generateEmailOptions(data) {
 
       if (!response.ok) throw new Error("Failed to send emails");
 
-
-      await fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/track`, {
-        method: "POST", 
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          uuid: userId,
-          meeting_id: meetingId,
-          event_type: "send_emails",
-          metadata: {
-            recipient_count: selectedEmails.length
-          }
-        }),
-      });
-
+      // Track email sending only if analytics is enabled
+      if (AMUREX_CONFIG.ANALYTICS_ENABLED) {
+        await fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/track`, {
+          method: "POST", 
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            uuid: userId,
+            meeting_id: meetingId,
+            event_type: "send_emails",
+            metadata: {
+              recipient_count: selectedEmails.length
+            }
+          }),
+        });
+      }
 
       // Show success state
       sendButton.innerHTML = "Emails Sent Successfully &#x2713;";
@@ -292,21 +331,23 @@ document.getElementById("download-transcript").addEventListener("click", () => {
 
           const userId = response.userId;
 
-          // Make tracking request with valid userId
-          fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/track`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Accept: "application/json",
-            },
-            body: JSON.stringify({ 
-              uuid: userId, 
-              meeting_id: meetingId, 
-              event_type: "download_transcript" 
-            }),
-          }).catch(error => {
-            console.error("Error tracking download:", error);
-          });
+          // Make tracking request only if analytics is enabled
+          if (AMUREX_CONFIG.ANALYTICS_ENABLED) {
+            fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/track`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json",
+              },
+              body: JSON.stringify({ 
+                uuid: userId, 
+                meeting_id: meetingId, 
+                event_type: "download_transcript" 
+              }),
+            }).catch(error => {
+              console.error("Error tracking download:", error);
+            });
+          }
 
           // Handle transcript download
           if (result.transcript) {
@@ -320,24 +361,108 @@ document.getElementById("download-transcript").addEventListener("click", () => {
   );
 });
 
-document.getElementById("copy-to-clipboard").addEventListener("click", () => {
-  const copyText = document.getElementById("copy-to-clipboard-text");
-  const originalText = copyText.textContent;
+document.getElementById('copy-to-clipboard').addEventListener('click', () => {
+  const button = document.getElementById('copy-to-clipboard');
+  const buttonText = button.querySelector('span');
+  const buttonIcon = button.querySelector('svg');
+  const originalText = buttonText.textContent;
   
-  copyText.textContent = "Copied!";
+  // Get and format content for copying
+  const actionItems = document.getElementById('action-items').innerText;
+  const meetingSummary = document.getElementById('meeting-summary').innerText;
+
+  // Clean and format action items
+  const cleanActionItems = actionItems
+    .split('\n')
+    .filter(item => item.trim() && !item.startsWith('#'))
+    .map(line => {
+      if (line.match(/^[*-]/)) {
+        return line.replace(/^[*-]+\s*/, '- [ ] ').trim();
+      }
+      return `- [ ] ${line.trim()}`;
+    })
+    .join('\n');
+
+  // Clean and format summary
+  const cleanSummary = meetingSummary
+    .split('\n')
+    .filter(line => line.trim() && !line.startsWith('#'))
+    .map(line => {
+      if (line.match(/^[*-]/)) {
+        return line.replace(/^([*-]+)\s*/, '$1 ').trim();
+      }
+      return line.trim();
+    })
+    .join('\n');
+
+  const markdownText = `## Action Items\n${cleanActionItems}\n\n## Meeting Summary\n${cleanSummary}`;
   
-  // Reset text after 2 seconds
-  setTimeout(() => {
-    copyText.textContent = originalText;
-  }, 2000);
+  navigator.clipboard.writeText(markdownText).then(() => {
+    // Change button appearance
+    button.style.background = 'rgba(147, 51, 234, 0.1)';
+    button.style.color = '#9333EA';
+    buttonText.textContent = 'Copied!';
+    
+    // Change icon to checkmark
+    buttonIcon.innerHTML = `
+      <path d="M20 6L9 17L4 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    `;
+    
+    // Reset after 2 seconds
+    setTimeout(() => {
+      button.style.background = '';
+      button.style.color = '';
+      buttonText.textContent = originalText;
+      buttonIcon.innerHTML = `
+        <path d="M8 4V16C8 17.1046 8.89543 18 10 18H18C19.1046 18 20 17.1046 20 16V7.24853C20 6.77534 19.7893 6.32459 19.4142 6.00001L16.9983 3.75735C16.6232 3.43277 16.1725 3.22205 15.6993 3.22205H10C8.89543 3.22205 8 4.11748 8 5.22205" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      `;
+    }, 2000);
+  });
 
-  chrome.storage.local.get(
-    ["transcript", "meetingTitle", "meetingStartTimeStamp"],
-    function (result) {
-      const meetingId = window.location.href.includes('meetingId=') ? 
-      window.location.href.split('meetingId=')[1].split('&')[0] : 
-      'unknown';
+  // Track the copy action if analytics is enabled
+  const meetingId = window.location.href.includes('meetingId=') ? 
+    window.location.href.split('meetingId=')[1].split('&')[0] : 
+    'unknown';
 
+  chrome.runtime.sendMessage(
+    {
+      action: "getUserId",
+    },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        console.error("Error getting user id:", chrome.runtime.lastError);
+        return;
+      }
+
+      const userId = response.userId;
+
+      if (AMUREX_CONFIG.ANALYTICS_ENABLED) {
+        fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/track`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({ 
+            uuid: userId, 
+            meeting_id: meetingId, 
+            event_type: "copy_to_clipboard" 
+          }),
+        }).catch(error => {
+          console.error("Error tracking copy to clipboard:", error);
+        });
+      }
+    }
+  );
+});
+
+// Copy buttons functionality
+document.querySelectorAll('.copy-btn').forEach(button => {
+  button.addEventListener('click', function() {
+    const section = this.closest('.section');
+    const contentDiv = section.querySelector('.card');
+    const text = contentDiv.innerText;
+      // Make tracking request only if analytics is enabled
       chrome.runtime.sendMessage(
         {
           action: "getUserId",
@@ -347,36 +472,60 @@ document.getElementById("copy-to-clipboard").addEventListener("click", () => {
             console.error("Error getting user id:", chrome.runtime.lastError);
             return;
           }
-
+    
           const userId = response.userId;
+          const meetingId = 'unknown';
 
-          // Make tracking request with valid userId
-          fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/track`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Accept: "application/json",
-            },
-            body: JSON.stringify({ 
-              uuid: userId, 
-              meeting_id: meetingId, 
-              event_type: "copy_to_clipboard" 
-            }),
-          }).catch(error => {
-            console.error("Error tracking download:", error);
-          });
-
-          // Copy to clipboard
-          const meetingSummary  = document.querySelector("#meeting-summary").innerText;
-          const actionItems = document.querySelector("#action-items").innerText;
-
-          navigator.clipboard.writeText(meetingSummary + actionItems);
+          if (AMUREX_CONFIG.ANALYTICS_ENABLED) {
+            fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/track`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json",
+              },
+              body: JSON.stringify({ 
+                uuid: userId, 
+                meeting_id: meetingId, 
+                event_type: "copy_to_clipboard_small_button" 
+              }),
+            }).catch(error => {
+              console.error("Error tracking share:", error);
+            });
+          }
         }
       );
-    }
-  );
+
+    navigator.clipboard.writeText(text).then(() => {
+      // Visual feedback
+      button.style.color = '#9333EA';
+      setTimeout(() => {
+        button.style.color = '';
+      }, 1000);
+    });
+  });
 });
 
+// Edit buttons functionality
+document.querySelectorAll('.edit-btn').forEach(button => {
+  button.addEventListener('click', function() {
+    const section = this.closest('.section');
+    const contentDiv = section.querySelector('.card');
+    
+    // Toggle contenteditable
+    const isEditable = contentDiv.contentEditable === 'true';
+    contentDiv.contentEditable = !isEditable;
+    
+    // Visual feedback
+    if (!isEditable) {
+      button.style.color = '#9333EA';
+      contentDiv.style.outline = '2px solid rgba(147, 51, 234, 0.5)';
+      contentDiv.style.borderRadius = '6px';
+    } else {
+      button.style.color = '';
+      contentDiv.style.outline = '';
+    }
+  });
+});
 
 function updateUI(isAuthenticated) {
   console.log("isAuthenticated", isAuthenticated);
@@ -413,4 +562,156 @@ document.getElementById("settings-btn").addEventListener("click", () => {
   chrome.tabs.create({
     url: `${AMUREX_CONFIG.BASE_URL_WEB}/settings`,
   });
+});
+
+// Add dropdown functionality
+const copyButton = document.getElementById('copy-button');
+const copyDropdown = copyButton.closest('.dropdown');
+
+copyButton.addEventListener('click', () => {
+  copyDropdown.classList.toggle('active');
+});
+
+// Close dropdown when clicking outside
+document.addEventListener('click', (e) => {
+  if (!copyDropdown.contains(e.target)) {
+    copyDropdown.classList.remove('active');
+  }
+});
+
+// Share to apps functionality
+document.getElementById('share-to-apps').addEventListener('click', () => {
+  const meetingId = window.location.href.includes('meetingId=') ? 
+    window.location.href.split('meetingId=')[1].split('&')[0] : 
+    'unknown';
+
+  chrome.runtime.sendMessage(
+    {
+      action: "getUserId",
+    },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        console.error("Error getting user id:", chrome.runtime.lastError);
+        return;
+      }
+
+      const userId = response.userId;
+
+      // Make tracking request only if analytics is enabled
+      if (AMUREX_CONFIG.ANALYTICS_ENABLED) {
+        fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/track`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({ 
+            uuid: userId, 
+            meeting_id: meetingId, 
+            event_type: "share_to_apps" 
+          }),
+        }).catch(error => {
+          console.error("Error tracking share:", error);
+        });
+      }
+
+      // Get and format content for sharing
+      const actionItems = document.getElementById('action-items').innerText;
+      const meetingSummary = document.getElementById('meeting-summary').innerText;
+
+      // Clean and format action items
+      const cleanActionItems = actionItems
+        .split('\n')
+        .filter(item => item.trim() && !item.startsWith('#')) // Remove empty lines and headers
+        .map(line => {
+          // If line starts with * or -, convert to checkbox format
+          if (line.match(/^[*-]/)) {
+            return line.replace(/^[*-]+\s*/, '- [ ] ').trim();
+          }
+          // If no marker, add checkbox format
+          return `- [ ] ${line.trim()}`;
+        })
+        .join('\n');
+
+      // Clean and format summary
+      const cleanSummary = meetingSummary
+        .split('\n')
+        .filter(line => line.trim() && !line.startsWith('#')) // Remove empty lines and headers
+        .map(line => {
+          // If line starts with * or -, keep the marker but clean up extra spaces
+          if (line.match(/^[*-]/)) {
+            return line.replace(/^([*-]+)\s*/, '$1 ').trim();
+          }
+          return line.trim();
+        })
+        .join('\n');
+
+      const markdownText = `## Action Items\n${cleanActionItems}\n\n## Meeting Summary\n${cleanSummary}`;
+
+      const shareOptions = {
+        text: markdownText,
+        title: 'Meeting Notes'
+      };
+
+      if (navigator.canShare && navigator.canShare(shareOptions)) {
+        navigator.share(shareOptions)
+          .then(() => {
+            console.log('Shared successfully');
+            copyDropdown.classList.remove('active');
+          })
+          .catch((error) => {
+            if (error.name !== 'AbortError') {
+              console.error('Error sharing:', error);
+            }
+          });
+      } else {
+        alert('Web Share API is not supported in your browser');
+      }
+    }
+  );
+});
+
+document.getElementById("previous-transcripts").addEventListener("click", () => {
+  // Open app.amurex.ai in a new tab
+  chrome.tabs.create({
+    url: `${AMUREX_CONFIG.BASE_URL_WEB}/meetings`,
+    active: true
+  });
+
+  // Get meetingId from URL if available
+  const meetingId = window.location.href.includes('meetingId=') ? 
+    window.location.href.split('meetingId=')[1].split('&')[0] : 
+    'unknown';
+
+  // Track the event if analytics is enabled
+  chrome.runtime.sendMessage(
+    {
+      action: "getUserId",
+    },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        console.error("Error getting user id:", chrome.runtime.lastError);
+        return;
+      }
+
+      const userId = response.userId;
+
+      if (AMUREX_CONFIG.ANALYTICS_ENABLED) {
+        fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/track`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({ 
+            uuid: userId, 
+            meeting_id: meetingId, 
+            event_type: "view_previous_transcripts" 
+          }),
+        }).catch(error => {
+          console.error("Error tracking previous transcripts view:", error);
+        });
+      }
+    }
+  );
 });

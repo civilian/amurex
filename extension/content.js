@@ -109,6 +109,27 @@ function setupWebSocket() {
 
       const userId = response.userId;
       console.log("User ID:", userId);
+      console.log("Meeting ID:", meetingId);
+
+      const setMeetingId = async (mId) => {
+        return new Promise((resolve, reject) => {
+          chrome.storage.local.set({ mId }, () => {
+            if (chrome.runtime.lastError) {
+              return reject(chrome.runtime.lastError);
+            }
+            resolve(`Meeting ID set to: ${mId}`);
+          });
+        });
+      };
+
+      (async () => {
+        try {
+          const result = await setMeetingId(meetingId); // Replace '12345' with your desired meeting ID
+          console.log(result);
+        } catch (error) {
+          console.error("Error setting Meeting ID:", error);
+        }
+      })();
 
       const wsUrl = `wss://${BASE_URL_BACKEND.replace(
         "https://",
@@ -230,9 +251,9 @@ const debouncedDoStuff = async function () {
     }
 
     // Send suggestion check via WebSocket
-    chrome.storage.local.get(["isFileUploaded"], function(result) {
+    chrome.storage.local.get(["isFileUploaded"], function (result) {
       const isFileUploaded = result.isFileUploaded;
-      
+
       // Now you can use isFileUploaded in your WebSocket message
       ws.send(
         JSON.stringify({
@@ -240,7 +261,7 @@ const debouncedDoStuff = async function () {
           data: {
             transcript: formattedPayload,
             user_id: userId,
-            isFileUploaded: isFileUploaded
+            isFileUploaded: isFileUploaded,
           },
         })
       );
@@ -251,7 +272,26 @@ const debouncedDoStuff = async function () {
       if (!event.data) {
         return;
       }
-      const data = JSON.parse(event.data);
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (error) {
+        console.error("Error parsing WebSocket message:", error);
+        chrome.storage.local.get(["meetingQA"], function (result) {
+          let qaHistory = result.meetingQA || [];
+          qaHistory.push({
+            timestamp: new Date().toISOString(),
+            question: "Error processing response",
+            answer: "Failed to generate meeting notes. Please try again later.",
+            meetingId: document.location.pathname.split("/")[1].split("?")[0],
+            type: "error_notification",
+          });
+          chrome.storage.local.set({ meetingQA: qaHistory }, function () {
+            console.log("Error notification stored in meetingQA");
+          });
+        });
+        return;
+      }
       // Check for exceeded_response type
       if (data.type === "exceeded_response") {
         console.log("Response limit exceeded, stopping transcript processing");
@@ -468,12 +508,21 @@ function meetingRoutines(uiType) {
 
         // CRITICAL DOM DEPENDENCY. Grab the transcript element. This element is present, irrespective of captions ON/OFF, so this executes independent of operation mode.
         const transcriptTargetNode = document.querySelector(".a4cQT");
+        // attempt one to dim down the transcript
+        if (transcriptTargetNode) {
+          transcriptTargetNode.style.position = "absolute";
+        }
+
         // Attempt to dim down the transcript
         try {
+          // console.log("This is the transcriptTargetNode", transcriptTargetNode);
           transcriptTargetNode.firstChild.style.opacity = 0.2;
         } catch (error) {
           console.error(error);
         }
+
+        // transcriptTargetNode.style.position = "absolute";
+        // console.log(transcriptTargetNode);
 
         // Create transcript observer instance linked to the callback function. Registered irrespective of operation mode, so that any visible transcript can be picked up during the meeting, independent of the operation mode.
         const transcriptObserver = new MutationObserver(transcriber);
@@ -549,9 +598,13 @@ function meetingRoutines(uiType) {
           }
 
           // Clear meetingQA from storage
-          chrome.storage.local.set({ meetingQA: [] }, function () {
-            console.log("Meeting QA cleared due to meeting end");
-          });
+          console.log("Setting hasMeetingEnded to true");
+          chrome.storage.local.set(
+            { meetingQA: [], hasMeetingEnded: true },
+            function () {
+              console.log("Meeting QA cleared due to meeting end");
+            }
+          );
 
           transcriptObserver.disconnect();
           chatMessagesObserver.disconnect();
@@ -565,11 +618,12 @@ function meetingRoutines(uiType) {
             "Saving to chrome storage and sending message to download transcript from background script"
           );
 
+          chrome.runtime.sendMessage({ type: "meeting_ended" });
           chrome.runtime.sendMessage({ type: "open_side_panel" });
 
           // can you send a notification to user saying that we are processing the transcript?
           overWriteChromeStorage(["transcript", "chatMessages"], true);
-          // showSidebar();
+
           // we will need to make an API call here to save the transcript to the cloud
         });
       } catch (error) {
@@ -835,101 +889,6 @@ function showNotificationContextual(extensionStatusJSON) {
   obj.prepend(text);
   obj.prepend(logo);
   if (html) html.append(obj);
-}
-
-async function fetchAINotes(summaryDiv, actionItemsDiv) {
-  try {
-    // Show loading state
-    summaryDiv.innerHTML =
-      '<div class="loading">Generating meeting notes...</div>';
-    actionItemsDiv.innerHTML =
-      '<div class="loading">Generating action items...</div>';
-
-    // Get transcript from storage
-    const result = await chrome.storage.local.get(["transcript"]);
-
-    if (!result.transcript || result.transcript.length === 0) {
-      summaryDiv.innerHTML =
-        "<p>No transcript available to generate notes.</p>";
-      actionItemsDiv.innerHTML = "<p>No action items available.</p>";
-      return;
-    }
-
-    // Format transcript data
-    const formattedTranscript = result.transcript
-      .map((entry) => ({
-        personName: entry.personName,
-        timeStamp: entry.timeStamp,
-        transcriptText: entry.personTranscript,
-      }))
-      .map(
-        (entry) =>
-          `${entry.personName} (${entry.timeStamp})\n${entry.transcriptText}\n`
-      )
-      .join("");
-
-    const body = {
-      transcript: formattedTranscript,
-    };
-
-    // Make API request
-    const response = await fetch(`${BASE_URL_BACKEND}/generate_actions`, {
-      method: "POST",
-      body: JSON.stringify(body),
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-    });
-
-    if (!response.ok) {
-      console.log("Transcript generation failed", formattedTranscript);
-      throw new Error(`Server responded with ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    // Display the Notion link and meeting notes
-    summaryDiv.innerHTML = `
-      <div class="notes-content">${
-        data.notes_content
-          ? data.notes_content
-              .trim()
-              .split("\n")
-              .filter((line) => line.trim() !== "")
-              .map((line) =>
-                line.startsWith("- ")
-                  ? `<li>${line.substring(2)}</li>` // Handle list items
-                  : line // Keep other lines as is
-                      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-                      .replace(/\*(.*?)\*/g, "<em>$1</em>")
-                      .replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2">$1</a>')
-              )
-              .join("\n") // Restore newlines
-              .replace(
-                /(<li>.*?<\/li>)\n?(<li>.*?<\/li>)+/g,
-                (list) => `<ul>${list}</ul>`
-              ) // Wrap consecutive list items
-              .replace(/\n/g, "<br>") // Convert remaining newlines to <br>
-          : "No meeting notes available."
-      }</div>
-    `;
-
-    // Display the action items with markdown formatting
-    actionItemsDiv.innerHTML = `
-      <div class="action-items">${
-        data.action_items || "No action items available."
-      }</div>
-    `;
-
-    // Initialize email options with the data
-    // generateEmailOptions(data);
-  } catch (error) {
-    console.error("Error generating notes:", error);
-    summaryDiv.innerHTML =
-      "<p>Failed to generate meeting notes. Please try again later.</p>";
-    actionItemsDiv.innerHTML = `<p class="error-details">Error: ${error.message}</p>`;
-  }
 }
 
 // CSS for notification

@@ -6,6 +6,52 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("close-btn").addEventListener("click", () => {
     window.close();
   });
+
+  // Add Previous Transcripts button functionality
+  document.getElementById("previous-transcripts").addEventListener("click", () => {
+    // Open app.amurex.ai in a new tab
+    chrome.tabs.create({
+      url: `${AMUREX_CONFIG.BASE_URL_WEB}/meetings`,
+      active: true
+    });
+
+    // Get meetingId from URL if available
+    const meetingId = window.location.href.includes('meetingId=') ? 
+      window.location.href.split('meetingId=')[1].split('&')[0] : 
+      'unknown';
+
+    // Track the event if analytics is enabled
+    chrome.runtime.sendMessage(
+      {
+        action: "getUserId",
+      },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          console.error("Error getting user id:", chrome.runtime.lastError);
+          return;
+        }
+
+        const userId = response.userId;
+
+        if (AMUREX_CONFIG.ANALYTICS_ENABLED) {
+          fetch(`${AMUREX_CONFIG.BASE_URL_BACKEND}/track`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({ 
+              uuid: userId, 
+              meeting_id: meetingId, 
+              event_type: "view_previous_transcripts" 
+            }),
+          }).catch(error => {
+            console.error("Error tracking previous transcripts view:", error);
+          });
+        }
+      }
+    );
+  });
 });
 
 function setupQAObserver() {
@@ -26,7 +72,7 @@ function updateQADisplay() {
     const summaryDiv = document.getElementById("meeting-summary");
     
     if (qaHistory.length === 0) {
-      summaryDiv.innerHTML = '<div class="loading-placeholder">No questions generated yet.  <a href="file_upload_panel.html" class="upload-button" style="color: #c76dcc; text-decoration: none; font-weight: 500;">Upload context files</a> to get started.</div>';
+      summaryDiv.innerHTML = '<div class="loading-placeholder">No questions generated yet.  <a href="file_upload_panel.html" class="upload-button" style="color: #9334E9; text-decoration: none; font-weight: 500;">Upload context files</a> to get started.</div>';
       return;
     }
 
