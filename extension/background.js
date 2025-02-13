@@ -95,15 +95,11 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     // deleteKeysFromStorage();
   } else if (
     message.type === "open_side_panel" ||
-    message.type === "open_late_meeting_side_panel" ||
     message.type === "open_file_upload_panel"
   ) {
     const pathMap = {
       open_side_panel: "sidepanels/sidepanel.html",
-      open_late_meeting_side_panel: `sidepanels/lateMeetingSidePanel.html${
-        message.meetingId ? `?meetingId=${message.meetingId}` : ""
-      }`,
-      open_file_upload_panel: `sidepanels/file_upload_panel.html${
+      open_file_upload_panel: `sidepanels/chatsidepanel.html${
         message.meetingId ? `?meetingId=${message.meetingId}` : ""
       }`,
     };
@@ -129,10 +125,8 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
 
     // Set the navigation item
     let navItem;
-    if (message.type === "open_late_meeting_side_panel") {
-      navItem = "lateMeetingSidePanel";
-    } else if (message.type === "open_file_upload_panel") {
-      navItem = "file_upload_panel";
+    if (message.type === "open_file_upload_panel") {
+      navItem = "chatsidepanel";
     } else if (message.type === "open_side_panel") {
       // Make tracking request with valid userId
       (async () => {
@@ -160,6 +154,17 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
     }
 
     chrome.storage.local.set({ navItem });
+  } else if (message.type === "fetch_late_summary") {
+    console.log("Fetching late summary");
+    fetchLateSummary(message.meetingId)
+      .then((data) => {
+        console.log("Late summary fetched");
+        console.log(data);
+
+        sendResponse({ success: true, data });
+      })
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true; // Required for async response
   }
 });
 
@@ -279,7 +284,7 @@ async function injectNotification() {
   let yesButton = document.createElement("button");
   yesButton.textContent = "Yes";
   yesButton.style.cssText = `
-    background: rgb(209, 173, 211);
+    background: #c76dcc;
     color: white;
     border: none;
     padding: 5px 15px;
@@ -295,8 +300,8 @@ async function injectNotification() {
   noButton.textContent = "No";
   noButton.style.cssText = `
     background: transparent;
-    color: rgb(209, 173, 211);
-    border: 1px solid rgb(209, 173, 211);
+    color: #c76dcc;
+    border: 1px solid #c76dcc;
     padding: 5px 15px;
     border-radius: 4px;
     cursor: pointer;
@@ -436,3 +441,21 @@ chrome.action.onClicked.addListener(async (tab) => {
   });
   chrome.sidePanel.open({ tabId: tab.id });
 });
+
+async function fetchLateSummary(meetingId) {
+  try {
+    const response = await fetch(
+      `${AMUREX_CONFIG.BASE_URL_BACKEND}/late_summary/${meetingId}`
+    );
+
+    if (!response.ok) {
+      throw new Error(`Server responded with ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Error fetching late meeting summary:", error);
+    throw error;
+  }
+}
