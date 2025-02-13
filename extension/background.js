@@ -1,8 +1,8 @@
 const AMUREX_CONFIG = {
   // there is one more config in the content.js script
-  BASE_URL_BACKEND: "https://api.amurex.ai",
-  BASE_URL_WEB: "https://app.amurex.ai",
-  ANALYTICS_ENABLED: true
+  BASE_URL_BACKEND: "http://localhost:9090",
+  BASE_URL_WEB: "http://localhost:3000",
+  ANALYTICS_ENABLED: true,
 };
 
 chrome.sidePanel
@@ -88,13 +88,12 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
 
     return true;
     // };
-  } else if ( message.type === "meeting_ended") {
+  } else if (message.type === "meeting_ended") {
     chrome.storage.local.set({ hasMeetingEnded: true }, function () {
       console.log("Meeting ended flag set");
     });
     // deleteKeysFromStorage();
-  } 
-    else if (
+  } else if (
     message.type === "open_side_panel" ||
     message.type === "open_late_meeting_side_panel" ||
     message.type === "open_file_upload_panel"
@@ -123,7 +122,7 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
 
     // Set storage values
     chrome.storage.local.set({ redirect: message.type });
-    
+
     if (message.meetingId) {
       chrome.storage.local.set({ meetingId: message.meetingId });
     }
@@ -145,12 +144,12 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
               "Content-Type": "application/json",
               Accept: "application/json",
             },
-            body: JSON.stringify({ 
+            body: JSON.stringify({
               uuid: userId,
               event_type: "open_sidepanel",
-              meeting_id: "unknown"
+              meeting_id: "unknown",
             }),
-          }).catch(error => {
+          }).catch((error) => {
             console.error("Error tracking sidepanel open:", error);
           });
         }
@@ -164,32 +163,34 @@ chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
   }
 });
 
-
 // Download transcript if meeting tab is closed
 chrome.tabs.onRemoved.addListener(async function (tabid) {
-  const data = await chrome.storage.local.get(["meetingTabId", "hasMeetingEnded"]);
-  
+  const data = await chrome.storage.local.get([
+    "meetingTabId",
+    "hasMeetingEnded",
+  ]);
+
   if (tabid == data.meetingTabId) {
     console.log("Successfully intercepted tab close");
-    
+
     // Check if it was a meeting page using storage flag
     if (data.hasMeetingEnded) {
       console.log("Meeting ended, skipping notification");
-      await chrome.storage.local.set({ 
+      await chrome.storage.local.set({
         meetingTabId: null,
-        hasMeetingEnded: false 
+        hasMeetingEnded: false,
       });
       console.log("Meeting tab id cleared for next meeting");
       return;
     }
-    
+
     // Create new tab and wait for it
-    const newTab = await chrome.tabs.create({ 
-      url: "https://meet.google.com/landing" 
+    const newTab = await chrome.tabs.create({
+      url: "https://meet.google.com/landing",
     });
 
     // Wait a bit for the page to start loading
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     // Execute script in the new tab
     try {
@@ -203,9 +204,9 @@ chrome.tabs.onRemoved.addListener(async function (tabid) {
     }
 
     // Clear meetingTabId and hasMeetingEnded flags
-    await chrome.storage.local.set({ 
+    await chrome.storage.local.set({
       meetingTabId: null,
-      hasMeetingEnded: false, 
+      hasMeetingEnded: false,
     });
     console.log("Meeting tab id cleared for next meeting");
 
@@ -217,17 +218,17 @@ chrome.tabs.onRemoved.addListener(async function (tabid) {
 async function injectNotification() {
   // Wait for the document body to be available
   if (!document.body) {
-    await new Promise(resolve => {
+    await new Promise((resolve) => {
       const observer = new MutationObserver((mutations, obs) => {
         if (document.body) {
           obs.disconnect();
           resolve();
         }
       });
-      
+
       observer.observe(document.documentElement, {
         childList: true,
-        subtree: true
+        subtree: true,
       });
     });
   }
@@ -268,7 +269,8 @@ async function injectNotification() {
     color: #fff;
     margin: 10px 0;
   `;
-  text.innerHTML = "Meeting ended. Would you like to see the summary and action items?";
+  text.innerHTML =
+    "Meeting ended. Would you like to see the summary and action items?";
 
   // Style button container
   buttonContainer.style.cssText = "display: flex; gap: 10px; margin-top: 10px;";
@@ -348,9 +350,11 @@ function downloadTranscript() {
             : `Amurex/Transcript.txt`;
 
         const transcriptString = JSON.stringify(result.transcript, null, 2);
-        console.log(`THIS IS THE TRANSCRIPT BEFORE SAVING TO TXT: ${transcriptString}`);
-        
-            // Create an array to store lines of the text file
+        console.log(
+          `THIS IS THE TRANSCRIPT BEFORE SAVING TO TXT: ${transcriptString}`
+        );
+
+        // Create an array to store lines of the text file
         const lines = [];
 
         // Iterate through the transcript array and format each entry
@@ -432,4 +436,3 @@ chrome.action.onClicked.addListener(async (tab) => {
   });
   chrome.sidePanel.open({ tabId: tab.id });
 });
-
