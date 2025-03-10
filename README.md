@@ -1,6 +1,7 @@
 <div align="center">
-  <img src="./assets/ogimage.jpg" alt="Amurex Logo" width="800" />
-  <h2>Your AI Meeting Copilot</h2>
+  <img src="https://github.com/user-attachments/assets/7ac42ba6-bf95-4d1b-b211-59630401deaa" alt="Amurex Logo" width="800" />
+
+  <h2>Your AI Copilot for Work + Life</h2>
 
   <p>
     <a href="https://github.com/thepersonalaicompany/amurex/blob/main/LICENSE">
